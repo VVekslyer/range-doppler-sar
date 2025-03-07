@@ -6,27 +6,23 @@ from scipy import interpolate
 
 def range_doppler_algorithm(raw_data, radar_params):
     """
-    Implements the Range-Doppler Algorithm (RDA) with accurate Secondary Range Compression (SRC)
-    for SAR image formation.
+    Implements the Range-Doppler Algorithm (RDA) up to and including STEP 4 (SRC)
+    for debugging purposes.
     
-    Steps:
-    1. Start: Raw radar data
+    Steps included:
+    1. Raw radar data
     2. Range Compression without the IFFT
-    3. Azimuth FFT
-    4. SRC Option 2 and range IFFT
-    5. RCMC
-    6. Azimuth Compression
-    7. Azimuth IFFT and Look Summation
-    8. End: Compressed data
+    3. Azimuth FFT to Range-Doppler domain
+    4. SRC and Range IFFT
     
     Args:
         raw_data: 2D complex array of raw SAR data (azimuth × range)
         radar_params: Dictionary containing radar parameters
         
     Returns:
-        Processed SAR image
+        range_doppler: Data after SRC and Range IFFT
     """
-    print("Starting Range-Doppler Algorithm...")
+    print("Starting partial Range-Doppler Algorithm (Steps 1-4)...")
     n_azimuth, n_range = raw_data.shape
     print(f"Data dimensions: {n_azimuth} azimuth samples × {n_range} range samples")
     
@@ -34,7 +30,6 @@ def range_doppler_algorithm(raw_data, radar_params):
     # STEP 1-2: RANGE COMPRESSION (WITHOUT IFFT)
     ##############################################
     print("Step 1-2: Range Compression (FFT + MF)")
-    
     # Apply window to reduce range sidelobes
     range_window = np.hamming(n_range)
     
@@ -65,91 +60,68 @@ def range_doppler_algorithm(raw_data, radar_params):
     ##############################################
     # STEP 4: SRC AND RANGE IFFT
     ##############################################
-    print("Step 4: Secondary Range Compression and Range IFFT (takes a while...)")
-    
+    print("Step 4: Secondary Range Compression and Range IFFT")
+
     # Extract parameters for SRC
     wavelength = radar_params['wavelength']    # m
     v = radar_params['platform_velocity']      # m/s
     r0 = radar_params['range_to_center']       # m
     fs = radar_params['sampling_rate']         # Hz
-    
+    bandwidth = radar_params['bandwidth']      # Hz 
+    pulse_duration = radar_params['pulse_duration']  # s
+
+    # Calculate nominal chirp rate
+    kr_0 = bandwidth / pulse_duration
+
     # Doppler frequency axis (centered)
     doppler_freq = np.fft.fftshift(np.fft.fftfreq(n_azimuth, radar_params['pri']))
-    
-    # Range frequency axis
+
+    # Range frequency axis (unshifted)
     range_freq = np.fft.fftfreq(n_range, 1/fs)
-    
-    # Initialize output array for SRC
+
+    # Diagnostic information
+    print(f"Nominal chirp rate: {kr_0:.3e} Hz/s")
+    print(f"Wavelength: {wavelength:.3e} m")
+    print(f"Platform velocity: {v} m/s")
+    print(f"Max Doppler frequency: {np.max(np.abs(doppler_freq)):.3f} Hz")
+    print(f"Max (wavelength*fd/(2*v))^2 value: {np.max((wavelength * np.abs(doppler_freq) / (2 * v))**2):.6f}")
+
+    # Initialize output array
     src_corrected = np.zeros_like(range_doppler_freq)
-    
-    # Apply SRC for each Doppler bin (Option 2 - frequency domain filter)
+
+    # Safety threshold for numerical stability
+    safety_threshold = 0.95
+
+    # Apply SRC for each Doppler bin
+    skipped_bins = 0
     for i, fd in enumerate(doppler_freq):
-        # Calculate range curvature factor
-        # This accounts for how the effective chirp rate changes with Doppler
-        curvature_factor = 1 / np.sqrt(1 - (wavelength * fd / (2 * v))**2)
+        # Calculate term inside sqrt - this represents the effect of platform motion
+        inside_term = (wavelength * fd / (2 * v))**2
         
-        # Apply SRC phase correction in frequency domain
-        # This is different from the time-domain approach used earlier
-        for j, fr in enumerate(range_freq):
-            phase = 2 * np.pi * fr**2 * (curvature_factor - 1) / fs**2
-            src_corrected[i, j] = range_doppler_freq[i, j] * np.exp(-1j * phase)
-    
-    # Now perform the range IFFT to get to the range-time, Doppler-frequency domain
+        # Safety check to avoid numerical instability
+        if inside_term >= safety_threshold:
+            # Skip this bin (use uncorrected data)
+            src_corrected[i, :] = range_doppler_freq[i, :]
+            skipped_bins += 1
+            continue
+        
+        # Calculate the modified chirp rate that depends on Doppler
+        # This represents how the effective chirp rate changes with Doppler frequency
+        kr_fd = kr_0 / np.sqrt(1 - inside_term)
+        
+        # Calculate the phase correction term for each range frequency
+        # This corrects for the quadratic phase error in the frequency domain
+        phase = np.pi * range_freq**2 * (1/kr_0 - 1/kr_fd)
+        
+        # Apply phase correction
+        src_corrected[i, :] = range_doppler_freq[i, :] * np.exp(-1j * phase)
+
+    print(f"Skipped {skipped_bins} out of {n_azimuth} Doppler bins due to numerical concerns")
+
+    # Now perform range IFFT to complete SRC
     range_doppler = np.fft.ifft(src_corrected, axis=1)
-    
-    ##############################################
-    # STEP 5: RANGE CELL MIGRATION CORRECTION (RCMC)
-    ##############################################
-    print("Step 5: Range Cell Migration Correction")
-    # RCMC corrects for the range migration during the synthetic aperture
-    rcmc_corrected = apply_rcmc(range_doppler, radar_params)
-    
-    ##############################################
-    # STEP 6: AZIMUTH COMPRESSION
-    ##############################################
-    print("Step 6: Azimuth Compression")
-    # Azimuth matched filter (phase-based focusing)
-    azimuth_mf = create_azimuth_matched_filter(rcmc_corrected.shape, radar_params)
-    
-    # Apply azimuth matched filter
-    compressed_doppler = rcmc_corrected * azimuth_mf
-    
-    ##############################################
-    # STEP 7: AZIMUTH IFFT AND LOOK SUMMATION
-    ##############################################
-    print("Step 7: Azimuth IFFT and Look Summation")
-    
-    # Define number of looks (can be parametrized)
-    n_looks = 1  # Single-look processing by default
-    
-    if n_looks == 1:
-        # Single-look processing: just do the IFFT
-        sar_image = np.fft.ifft(np.fft.ifftshift(compressed_doppler, axes=0), axis=0)
-    else:
-        # Multi-look processing: divide the Doppler spectrum into looks
-        look_size = n_azimuth // n_looks
-        
-        # Initialize the multi-look image
-        sar_image = np.zeros((n_azimuth, n_range), dtype=complex)
-        
-        # Process each look separately
-        for look in range(n_looks):
-            # Calculate start and end indices for this look
-            start_idx = (n_azimuth - n_looks * look_size) // 2 + look * look_size
-            end_idx = start_idx + look_size
-            
-            # Extract this look's data
-            look_data = np.zeros_like(compressed_doppler)
-            look_data[start_idx:end_idx, :] = compressed_doppler[start_idx:end_idx, :]
-            
-            # IFFT for this look
-            look_image = np.fft.ifft(np.fft.ifftshift(look_data, axes=0), axis=0)
-            
-            # Accumulate into the final image (incoherent summation of look magnitudes)
-            sar_image += np.abs(look_image) / n_looks
-    
-    print("RDA processing complete")
-    return sar_image
+
+    return range_doppler
 
 def create_range_matched_filter(n_range, radar_params):
     """
@@ -445,12 +417,49 @@ def main():
                             range_compressed_freq = range_fft * range_mf[np.newaxis, :]
                             range_compressed = np.fft.ifft(range_compressed_freq, axis=1)
                             
-                            # Full RDA processing
-                            print("\nPerforming full Range-Doppler processing...")
-                            sar_image = range_doppler_algorithm(raw_data, radar_params)
-                            
-                            # Plot the processing steps
-                            plot_sar_processing_steps(raw_data, range_compressed, sar_image, radar)
+                            # Perform partial Range-Doppler processing (up to Step 4)
+                            print("\nPerforming partial Range-Doppler processing (Steps 1-4)...")
+                            range_doppler = range_doppler_algorithm(raw_data, radar_params)
+
+                            # Calculate range-compressed data (for plotting comparison)
+                            range_window = np.hamming(raw_data.shape[1])
+                            range_fft = np.fft.fft(raw_data * range_window[np.newaxis, :], axis=1)
+                            range_mf = create_range_matched_filter(raw_data.shape[1], radar_params)
+                            range_compressed_freq = range_fft * range_mf[np.newaxis, :]
+                            range_compressed = np.fft.ifft(range_compressed_freq, axis=1)
+
+                            # Plot results up to Step 4
+                            fig, axes = plt.subplots(3, 1, figsize=(12, 15))
+
+                            # Plot 1: Raw data
+                            raw_db = 20 * np.log10(np.abs(raw_data) + 1e-10)
+                            vmin_raw, vmax_raw = np.percentile(raw_db, [5, 98])
+                            im1 = axes[0].imshow(raw_db, aspect='auto', cmap='viridis', vmin=vmin_raw, vmax=vmax_raw)
+                            axes[0].set_title(f"{radar} - Raw SAR Data")
+                            axes[0].set_xlabel("Range Samples")
+                            axes[0].set_ylabel("Azimuth Samples")
+                            plt.colorbar(im1, ax=axes[0], label="Amplitude (dB)")
+
+                            # Plot 2: Range compressed data
+                            range_db = 20 * np.log10(np.abs(range_compressed) + 1e-10)
+                            vmin_rc, vmax_rc = np.percentile(range_db, [5, 98])
+                            im2 = axes[1].imshow(range_db, aspect='auto', cmap='jet', vmin=vmin_rc, vmax=vmax_rc)
+                            axes[1].set_title(f"{radar} - Range Compressed Data")
+                            axes[1].set_xlabel("Range Bins")
+                            axes[1].set_ylabel("Azimuth Samples")
+                            plt.colorbar(im2, ax=axes[1], label="Amplitude (dB)")
+
+                            # Plot 3: Range-Doppler WITH SRC
+                            rd_db = 20 * np.log10(np.abs(range_doppler) + 1e-10)
+                            vmin_rd3, vmax_rd3 = np.percentile(rd_db, [5, 98])
+                            im3 = axes[2].imshow(rd_db, aspect='auto', cmap='inferno', vmin=vmin_rd3, vmax=vmax_rd3)
+                            axes[2].set_title(f"{radar} - After SRC and Range IFFT")
+                            axes[2].set_xlabel("Range Bins")
+                            axes[2].set_ylabel("Doppler Bins")
+                            plt.colorbar(im3, ax=axes[2], label="Amplitude (dB)")
+
+                            plt.tight_layout()
+                            plt.show()
                             
                         else:
                             print(f"Warning: '{radar}/raw_adc' dataset not found in the HDF5 file")
