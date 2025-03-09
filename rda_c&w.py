@@ -161,54 +161,54 @@ plt.show()
 # Additional Azimuth Matched Filtering Using System Parameters
 # --------------------------------------------------------------------------------
 # System parameters:
-c = 3e8
-fc = 80e9           # Center frequency: 80 GHz
-lam = c / fc        # Wavelength (m)
-v = 0.0166          # Platform velocity in m/s
-R0 = 2.0            # Assumed reference slant range in meters
+# c = 3e8
+# fc = 80e9           # Center frequency: 80 GHz
+# lam = c / fc        # Wavelength (m)
+# v = 0.0166          # Platform velocity in m/s
+# R0 = 2.0            # Assumed reference slant range in meters
 
-# Compute the azimuth FM rate (Ka); for a broadside system:
-Ka = - (2 * v**2) / (lam * R0)  
-# (Ka is negative if Doppler frequency decreases with time)
+# # Compute the azimuth FM rate (Ka); for a broadside system:
+# Ka = - (2 * v**2) / (lam * R0)  
+# # (Ka is negative if Doppler frequency decreases with time)
 
-# Generate the azimuth time vector (eta), centered at zero.
-eta = np.linspace(-n_az/2, n_az/2 - 1, n_az) * dt_az  # in seconds
+# # Generate the azimuth time vector (eta), centered at zero.
+# eta = np.linspace(-n_az/2, n_az/2 - 1, n_az) * dt_az  # in seconds
 
-# The expected azimuth phase in the raw data (from target motion) is:
-# exp(-j*pi*|Ka|*eta^2).  Therefore, the matched filter (reference chirp)
-# should be the complex conjugate: exp(+j*pi*|Ka|*eta^2).
-ref_chirp = np.exp(1j * np.pi * np.abs(Ka) * eta**2)
+# # The expected azimuth phase in the raw data (from target motion) is:
+# # exp(-j*pi*|Ka|*eta^2).  Therefore, the matched filter (reference chirp)
+# # should be the complex conjugate: exp(+j*pi*|Ka|*eta^2).
+# ref_chirp = np.exp(1j * np.pi * np.abs(Ka) * eta**2)
 
-# Transform the reference chirp to the Doppler domain.
-H_ref = np.fft.fftshift(np.fft.fft(ref_chirp))
+# # Transform the reference chirp to the Doppler domain.
+# H_ref = np.fft.fftshift(np.fft.fft(ref_chirp))
 
-# Apply the matched filter in the Doppler domain to each range bin.
-# (H_ref is 1D; multiply along axis 0.)
-S1_focused = S1 * np.conj(H_ref)[:, np.newaxis]
+# # Apply the matched filter in the Doppler domain to each range bin.
+# # (H_ref is 1D; multiply along axis 0.)
+# S1_focused = S1 * np.conj(H_ref)[:, np.newaxis]
 
-# Optionally, perform an inverse FFT to obtain the focused azimuth time domain signal.
-focused_azimuth = np.fft.ifft(np.fft.ifftshift(S1_focused, axes=0), axis=0)
+# # Optionally, perform an inverse FFT to obtain the focused azimuth time domain signal.
+# focused_azimuth = np.fft.ifft(np.fft.ifftshift(S1_focused, axes=0), axis=0)
 
-# For visualization, compute the magnitude (in dB) of the focused Doppler data.
-mag_focused_dB = 20 * np.log10(np.abs(S1_focused) + 1e-12)
+# # For visualization, compute the magnitude (in dB) of the focused Doppler data.
+# mag_focused_dB = 20 * np.log10(np.abs(S1_focused) + 1e-12)
 
-# Plot the focused azimuth FFT result.
-fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+# # Plot the focused azimuth FFT result.
+# fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 
-im0 = axs[0].imshow(np.real(focused_azimuth), cmap='gray', extent=extent_az,
-                    origin='lower', aspect='auto')
-axs[0].set_title("Focused Azimuth (Real Part)")
-axs[0].set_xlabel("Expanded Range Axis (units)")
-axs[0].set_ylabel("Azimuth Frequency (Hz)")
-fig.colorbar(im0, ax=axs[0])
+# im0 = axs[0].imshow(np.real(focused_azimuth), cmap='gray', extent=extent_az,
+#                     origin='lower', aspect='auto')
+# axs[0].set_title("Focused Azimuth (Real Part)")
+# axs[0].set_xlabel("Expanded Range Axis (units)")
+# axs[0].set_ylabel("Azimuth Frequency (Hz)")
+# fig.colorbar(im0, ax=axs[0])
 
-im1 = axs[1].imshow(mag_focused_dB, cmap='gray', extent=extent_az,
-                    origin='lower', aspect='auto')
-axs[1].set_title("Focused Azimuth (Magnitude in dB)")
-axs[1].set_xlabel("Expanded Range Axis (units)")
-axs[1].set_ylabel("Azimuth Frequency (Hz)")
-fig.colorbar(im1, ax=axs[1])
+# im1 = axs[1].imshow(mag_focused_dB, cmap='gray', extent=extent_az,
+#                     origin='lower', aspect='auto')
+# axs[1].set_title("Focused Azimuth (Magnitude in dB)")
+# axs[1].set_xlabel("Expanded Range Axis (units)")
+# axs[1].set_ylabel("Azimuth Frequency (Hz)")
+# fig.colorbar(im1, ax=axs[1])
 
-plt.tight_layout()
-plt.show()
+# plt.tight_layout()
+# plt.show()
 
