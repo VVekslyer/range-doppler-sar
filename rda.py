@@ -6,14 +6,14 @@ from scipy import interpolate
 
 def range_doppler_algorithm(raw_data, radar_params):
     """
-    Implements the Range-Doppler Algorithm (RDA) up to and including STEP 4 (SRC)
-    for debugging purposes.
+    Implements the Range-Doppler Algorithm (RDA)
     
     Steps included:
     1. Raw radar data
     2. Range Compression without the IFFT
     3. Azimuth FFT to Range-Doppler domain
     4. SRC and Range IFFT
+    5. RCMC (Range Cell Migration Correction)
     
     Args:
         raw_data: 2D complex array of raw SAR data (azimuth × range)
@@ -22,7 +22,7 @@ def range_doppler_algorithm(raw_data, radar_params):
     Returns:
         range_doppler: Data after SRC and Range IFFT
     """
-    print("Starting partial Range-Doppler Algorithm (Steps 1-4)...")
+    print("Starting Range-Doppler Algorithm (Steps 1-5)...")
     n_azimuth, n_range = raw_data.shape
     print(f"Data dimensions: {n_azimuth} azimuth samples × {n_range} range samples")
     
@@ -41,7 +41,7 @@ def range_doppler_algorithm(raw_data, radar_params):
     
     # Apply range matched filter (frequency domain multiplication)
     range_compressed_freq = range_fft * range_mf[np.newaxis, :]
-    
+     
     # Note: We intentionally skip the IFFT step here
     
     ##############################################
@@ -105,14 +105,17 @@ def range_doppler_algorithm(raw_data, radar_params):
             skipped_bins += 1
             continue
         
-        # Calculate the modified chirp rate that depends on Doppler
-        # This represents how the effective chirp rate changes with Doppler frequency
-        kr_fd = kr_0 / np.sqrt(1 - inside_term)
-        
-        # Calculate the phase correction term for each range frequency
-        # This corrects for the quadratic phase error in the frequency domain
-        phase = np.pi * range_freq**2 * (1/kr_0 - 1/kr_fd)
-        
+        # Calculate effective chirp rate modification factor based on Doppler
+        D_fd = 1 / np.sqrt(1 - (wavelength * fd / (2 * v))**2)
+
+        # Calculate modified chirp rate for this Doppler bin
+        Kr_fd = kr_0 * D_fd
+
+        # Create phase correction based on chirp rate difference
+        # This is directly related to the QPE formula mentioned
+        T_r = pulse_duration  # Pulse duration (often Tr/2 is used in calculations)
+        phase = np.pi * range_freq**2 * (1/kr_0 - 1/Kr_fd)
+
         # Apply phase correction
         src_corrected[i, :] = range_doppler_freq[i, :] * np.exp(-1j * phase)
 
@@ -121,7 +124,89 @@ def range_doppler_algorithm(raw_data, radar_params):
     # Now perform range IFFT to complete SRC
     range_doppler = np.fft.ifft(src_corrected, axis=1)
 
-    return range_doppler
+    ##############################################
+    # STEP 5: RANGE CELL MIGRATION CORRECTION (RCMC)
+    ##############################################
+    print("Step 5: Range Cell Migration Correction")
+
+    # Extract parameters needed for RCMC
+    wavelength = radar_params['wavelength']    # m
+    v = radar_params['platform_velocity']      # m/s
+    r0 = radar_params['range_to_center']       # m
+    fs = radar_params['sampling_rate']         # Hz
+    c = 3e8                                   # Speed of light (m/s)
+    range_spacing = c / (2 * fs)              # Range sample spacing (m)
+
+    # Doppler frequency axis (centered)
+    doppler_freq = np.fft.fftshift(np.fft.fftfreq(n_azimuth, radar_params['pri']))
+
+    # Create output array for RCMC-corrected data
+    rcmc_corrected = np.zeros_like(range_doppler)
+
+    # Diagnostic info
+    print(f"Range sample spacing: {range_spacing:.6f} m")
+    max_rcm = (wavelength**2 * r0 * np.max(np.abs(doppler_freq))**2) / (8 * v**2)
+    print(f"Maximum range migration: {max_rcm:.6f} m ({max_rcm/range_spacing:.2f} samples)")
+
+    # Use scipy's interpolation instead of custom sinc interpolation
+    from scipy import interpolate
+
+    # Set maximum shift limit to avoid excessive interpolation
+    MAX_SHIFT_SAMPLES = 200  # Limit the maximum shift to a reasonable value
+
+    # Create range bins array once
+    range_bins = np.arange(n_range)
+
+    # Apply RCMC for each Doppler bin
+    for i, fd in enumerate(doppler_freq):
+        # Calculate range cell migration for this Doppler frequency
+        # Formula: ΔR(fη) = (λ² R₀ fη²)/(8Vr²)
+        range_migration = (wavelength**2 * r0 * fd**2) / (8 * v**2)
+        
+        # Convert migration from meters to samples
+        sample_shift = range_migration / range_spacing
+        
+        if abs(sample_shift) < 0.01:
+            # Skip small shifts
+            rcmc_corrected[i, :] = range_doppler[i, :]
+            continue
+        
+        # Limit the maximum shift to avoid excessive interpolation
+        if abs(sample_shift) > MAX_SHIFT_SAMPLES:
+            if i % 100 == 0:  # Avoid excessive printing
+                print(f"Warning: Limiting shift at bin {i} from {sample_shift:.2f} to {MAX_SHIFT_SAMPLES if sample_shift > 0 else -MAX_SHIFT_SAMPLES} samples")
+            sample_shift = MAX_SHIFT_SAMPLES if sample_shift > 0 else -MAX_SHIFT_SAMPLES
+        
+        # Shifted sample positions (negative shift because we're correcting the migration)
+        shifted_positions = range_bins - sample_shift
+        
+        # Use scipy's interpolation for better performance
+        # Handle real and imaginary parts separately
+        real_part = np.real(range_doppler[i, :])
+        imag_part = np.imag(range_doppler[i, :])
+        
+        # Create interpolation functions (cubic spline for better accuracy)
+        real_interp = interpolate.interp1d(
+            range_bins, real_part, kind='cubic', 
+            bounds_error=False, fill_value=0
+        )
+        
+        imag_interp = interpolate.interp1d(
+            range_bins, imag_part, kind='cubic', 
+            bounds_error=False, fill_value=0
+        )
+        
+        # Apply interpolation
+        valid_shifts = (shifted_positions >= 0) & (shifted_positions < n_range)
+        rcmc_corrected[i, valid_shifts] = real_interp(shifted_positions[valid_shifts]) + 1j * imag_interp(shifted_positions[valid_shifts])
+        
+        if i % 100 == 0:  # Print progress occasionally
+            print(f"Processed Doppler bin {i}/{n_azimuth}, shift = {sample_shift:.2f} samples")
+
+    print(f"RCMC completed")
+
+    # Return both SRC and RCMC results
+    return {"src_result": range_doppler, "rcmc_result": rcmc_corrected}
 
 def create_range_matched_filter(n_range, radar_params):
     """
@@ -418,8 +503,10 @@ def main():
                             range_compressed = np.fft.ifft(range_compressed_freq, axis=1)
                             
                             # Perform partial Range-Doppler processing (up to Step 4)
-                            print("\nPerforming partial Range-Doppler processing (Steps 1-4)...")
-                            range_doppler = range_doppler_algorithm(raw_data, radar_params)
+                            print("Starting Range-Doppler Algorithm (Steps 1-5)...")
+                            results = range_doppler_algorithm(raw_data, radar_params)
+                            range_doppler = results["src_result"]
+                            rcmc_corrected = results["rcmc_result"]
 
                             # Calculate range-compressed data (for plotting comparison)
                             range_window = np.hamming(raw_data.shape[1])
@@ -428,8 +515,8 @@ def main():
                             range_compressed_freq = range_fft * range_mf[np.newaxis, :]
                             range_compressed = np.fft.ifft(range_compressed_freq, axis=1)
 
-                            # Plot results up to Step 4
-                            fig, axes = plt.subplots(3, 1, figsize=(12, 15))
+                            # Plot results up to Step 5
+                            fig, axes = plt.subplots(4, 1, figsize=(12, 20))
 
                             # Plot 1: Raw data
                             raw_db = 20 * np.log10(np.abs(raw_data) + 1e-10)
@@ -449,14 +536,23 @@ def main():
                             axes[1].set_ylabel("Azimuth Samples")
                             plt.colorbar(im2, ax=axes[1], label="Amplitude (dB)")
 
-                            # Plot 3: Range-Doppler WITH SRC
+                            # Plot 3: After SRC and Range IFFT
                             rd_db = 20 * np.log10(np.abs(range_doppler) + 1e-10)
-                            vmin_rd3, vmax_rd3 = np.percentile(rd_db, [5, 98])
-                            im3 = axes[2].imshow(rd_db, aspect='auto', cmap='inferno', vmin=vmin_rd3, vmax=vmax_rd3)
+                            vmin_rd, vmax_rd = np.percentile(rd_db, [5, 98])
+                            im3 = axes[2].imshow(rd_db, aspect='auto', cmap='plasma', vmin=vmin_rd, vmax=vmax_rd)
                             axes[2].set_title(f"{radar} - After SRC and Range IFFT")
                             axes[2].set_xlabel("Range Bins")
                             axes[2].set_ylabel("Doppler Bins")
                             plt.colorbar(im3, ax=axes[2], label="Amplitude (dB)")
+
+                            # Plot 4: After RCMC
+                            rcmc_db = 20 * np.log10(np.abs(rcmc_corrected) + 1e-10)
+                            vmin_rcmc, vmax_rcmc = np.percentile(rcmc_db, [5, 98])
+                            im4 = axes[3].imshow(rcmc_db, aspect='auto', cmap='inferno', vmin=vmin_rcmc, vmax=vmax_rcmc)
+                            axes[3].set_title(f"{radar} - After RCMC")
+                            axes[3].set_xlabel("Range Bins")
+                            axes[3].set_ylabel("Doppler Bins")
+                            plt.colorbar(im4, ax=axes[3], label="Amplitude (dB)")
 
                             plt.tight_layout()
                             plt.show()
