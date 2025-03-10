@@ -1,5 +1,7 @@
 # ENSC 461 Final Project: Range Doppler Algorithm
 
+**DISCLAIMER:** These notes are entirely copy pasted from the Cummings & Wong "Digital Processing of Synthetic Aperture Data". These ideas and procedures are not my original ideas and they will be cited properly at the end of this project. The intention is to build a proper SAR processing algorithm for an applied purpose.
+
 The Range Doppler Algorithm (RDA) is designed to achieve block processing efficiency, using frequency domain operations in both range and azimuth, while maintaining the simplicity of one-dimensional operations. It takes advantage of the approximate separability of processing in these two directions, allowed by the large difference in time scales of the range and azimuth data, and by the of range cell migration correction (RCMC) between the two one-dimensional operations.
 
 From the book there's three implementations:
@@ -115,5 +117,85 @@ $$
 The result should be:
 
 <img src="file:///C:/Users/vital/Pictures/Typedown/00d7b824-8811-4362-9978-a52cd7059893.png" title="" alt="00d7b824-8811-4362-9978-a52cd7059893" data-align="center">
+
+# 4 Range Cell Migration Correction (RCMC)
+
+There are two ways to implement range cell migration correction (RCMC). In the first option, RCMC is performed by a range interpolation operation in the range Doppler domain. An interpolator based on the sine function can be conveniently implemented. The sine kernel is truncated and weighted by a tapering window, such as a Kaiser window.
+
+The amount of RCM to correct is given by 
+
+$$
+\Delta R(f_η) = \frac{λ^2 R_0 f_η^2}{8 V_r^2}
+$$
+
+This equation represents the target displacement as a function of azimuth frequency, $f_η$. Note that $\Delta R(f_η)$ is also a function of $R_0$; that is, it is range variant. Since one of the dimensions in the data is range time, the RDA can correctly implement the range variation of the RCM in the range Doppler domain. Another RCMC implementation involves the assumption that the RCM is range invariant, at least over a finite range region. In this case, the RCMC can be implemented using an FFT, linear phase multiply, and IFFT technique. The phase multiplier, for a given $f_η$ is given by
+
+$$
+G_{rcmc}(f_\tau) = \exp\left\{j\frac{4\pi f_\tau \Delta R\left(f_{\eta}\right)}{c}\right\}
+$$
+
+To apply RCMC using this implementation, small range blocks can be used, with the correction amount held constant within each block. However, this implementation has the disadvantage that the blocks have to overlap in range, and the efficiency gain may not be worth the added complexity. From now on, the sine interpolation option is assumed. Assuming the RCMC interpolation is applied accurately, the signal becomes
+
+$$
+S_2(\tau,f_η) = A_0 p_r\left(\tau - \frac{2R_0}{c}\right) W_a(f_η - f_{η_c}) \cdot \exp\left\{-j\frac{4\pi f_{0}R_{0}}{c}\right\}\exp\left\{j\pi\frac{f_{\eta}^{2}}{K_{a}}\right\}
+$$
+
+Note that the range envelope, $p_r$, is now independent of azimuth frequency, showing that the RCM has been corrected. In addition, the energy is now centered at $\tau = 2R_0/c$, the range of closest approach.
+
+There are three issues in the generation and application of the RCMC interpolator: the kernel length, the shift quantization, and the coefficient values ( the sine window). To perform the interpolation efficiently, the interpolation kernel can be tabulated at predefined subsample ( quantization) intervals. In this way, the sine function does not need to be generated at every interpolation point; only nearest neighbor indexing into the tabulated function is required. This introduces a maximum geometric distortion of $0.5 N_{\text{sub}}$, where $N_{\text{sub}}$ is the number of subsamples (typically 16). You can use generation of the kernel coefficients.
+
+or efficiency considerations, the size of the interpolator kernel should be as short as possible. However, a short kernel has two drawbacks: the loss of radiometric and phase accuracy, and the introduction of radiometric artifacts known as paired echoes.
+
+In practice, a compromise is made between no interpolation (nearest neighbor selection), and perfect interpolation (infinite length). Usually, a four- or eight-point interpolator is chosen to give reasonable accuracy. A quantization of 1/16 or 1/32 of a cell is used in practice. With a four-point interpolator, it is seen that the modulation is lower than say using Nearest Neighbor, and the paired echoes are reduced to 28 dB below the target peak.
+
+The RCMC algorithm operates on the data in the range Doppler domain, which is the plot from the Azimuth FFT. After the RCMC interpolator has been applied, the data takes on a straightened form.
+
+![a3efcdd7-967e-43f8-85f7-391920f105b2](file:///C:/Users/vital/Pictures/Typedown/a3efcdd7-967e-43f8-85f7-391920f105b2.png)
+
+Image registration operations can be incorporated into the RCMC interpolation, namely, slant range to ground range (SRGR) conversion and scaling the sample spacing to a map grid. 
+
+The natural slant range output sample spacing is given by $c/(2F_r \sin{θ_i})$, where $θ_i$ is the range-dependent incidence angle. Both factors require interpolation in the range direction, and therefore can be combined with the RCMC operation.
+
+
+
+# 6  Azimuth Compression
+
+In azimuth, there is usually some latitude in the choice of processed resolution. This is because the azimuth signal bandwidth is often greater than needed to make the azimuth resolution the same as the range resolution. "Full-resolution" ( or "single-look") processing can be done, using all the bandwidth, and achieving a resolution close to the theoretical limit of one-half the antenna length. On the other hand, "multilook" processing can be done, in which the data are processed to a resolution less than this limit, to obtain a less noisy image. One-look processing is discussed in this section.
+
+After RCMC, a matched filter is applied to focus the data in the azimuth direction. Since the data after RCMC are in the range Doppler domain, it is convenient and efficient to implement the azimuth matched filter in this domain; that is, as a function of slant range, $R_0$, and azimuth frequency, $f_η$. The matched filter is the complex conjugate of the second exponential term in $S_2(\tau,f_η)$.
+
+$$
+H_{\text{az}}(f_η) = \exp\left\{-j\pi\frac{f_{\eta}^{2}}{K_{a}}\right\}
+$$
+
+in which $K_a$ is a function of $R_0$ like we did in $K_a \approx \frac{2V_r^2}{λR_0}$. This version of the matched filter is implemented. 
+
+The Doppler centroid is an important parameter in generating the matched filter in much the same way as it is for RCMC. Recall that a point of discontinuity in the $f_η$ array must be selected, due to the wraparound in the frequency domain. This point is taken to be one-half of a PRF away from the Doppler centroid frequency.
+
+The compressed result is registered to zero Doppler with this filter. The registration is correct because the phase of each target is canceled by the matched filter, except for a linear phase component that gives each target its unique position in the output array.
+
+Weighting can be applied in the azimuth compression process. Because the azimuth beam profile already applies a significant amount of weighting in the single-look case, only a small amount of additional matched filter weighting is generally needed. As the magnitude of the two-way beam pattern at the edges of the processed beamwidth is approximately one-half of its peak value, the effective beam weighting is equivalent to a Kaiser window with a coefficient, $β$, equal to 1.8. Therefore, if a total weighting is desired that is equivalent to $β = 2.5$, only a light additional weighting need be applied with the matched filter. Because of the existing antenna weighting, either a moderate window can be used to give a small additional amount of tapering, or no window need be used. 
+
+
+
+To perform azimuth compression, the data after RCMC, $S_2(\tau,f_η)$ are multipled by the frequency domain matched filter, $H_{\text{az}}(f_η)$. The result is
+
+$$
+S_3(\tau,f_η) = S_2(\tau,f_η) H_{\text{az}}(f_η)
+$$
+
+An IFFT then completes the compression
+
+$$
+S_ac(\tau,η) = \text{IFFT}_η\left\{S_{3}\left(\tau,f_{\eta}\right)\right\}
+$$
+
+The envelopes show that the target is now positioned at $\tau = 2R_0/c$ and $η = 0$. Recalling that 77 is relative to the time of closest approach when zero Doppler occurs for the given target, it is seen that the target is registered to its zero Doppler position.
+
+It must be emphasized that the phase mentioned above is an approximation when the parabolic form of the range equation given in (6.5) or (6.10) is used. When this approximation is used, the processor may not be phase preserv.ing for nonzero squints. The current practice is to use the hyperbolic form of the phase for the matched filter for low squint cases when phase precision is needed.
+
+
+
+Please provide four plots in this window (a) Compressed signal with Azimuth (samples) vs. Range time (samples), (b) Target C spectrum with Azimuth freq. (samples) vs. Range freq (samples), (c) Expanded Target C with Azimuth (samples) vs. Range (samples), (d) Expanded Target C contours with Azimuth (sample) vs. Range (samples) 
 
 

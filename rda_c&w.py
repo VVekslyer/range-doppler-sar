@@ -114,8 +114,8 @@ plt.show()
 n_az = s_rc.shape[0]
 
 # Set the azimuth sampling interval based on the radar PRF.
-# For a PRF of 2000 Hz, dt_az is:
-dt_az = 1/2000  # 0.5e-3 seconds (adjust if needed)
+# For a PRF of 1000 Hz like in the C&W book, dt_az is:
+dt_az = 1/1000  # 0.5e-3 seconds (adjust if needed)
 
 # Optionally, apply an azimuth window to reduce sidelobes.
 azimuth_window = np.hanning(n_az)
@@ -212,3 +212,75 @@ plt.show()
 # plt.tight_layout()
 # plt.show()
 
+# --------------------------------------------------------------------------------
+# 4. Range Cell Migration Correction (RCMC)
+# --------------------------------------------------------------------------------
+# S1 is our azimuth FFT output (Doppler domain along azimuth, range dimension still in time).
+# For RCMC, we need to work in the range frequency domain.
+
+# Step 1: Transform the range (x-axis) to frequency domain.
+S1_range = np.fft.fft(S1, axis=1)  # Now data is in (azimuth Doppler, range frequency)
+
+# Recompute (or re-use) the range frequency axis.
+num_range_samples = s_rc.shape[1]  # number of range samples
+f_tau = np.fft.fftfreq(num_range_samples, d=dt)  # 1D array, length = num_range_samples
+
+# System parameters:
+c = 3e8            # Speed of light (m/s)
+f_c = 80e9         # Center frequency (80 GHz)
+λ = c / f_c        # Wavelength (m), ~3.75e-3 m (3.75 mm)
+# v and R0 should be defined from earlier processing; but I'll just use
+v = 1              # Platform velocity in m/s
+R0 = 10            # Reference slant range in meters
+
+# Step 2: Compute the RCM amount for each azimuth frequency.
+# f_eta (already computed) is the Doppler frequency axis (1D, length = n_az).
+ΔR = (λ**2 * R0 * f_eta**2) / (8 * v**2)  # shape: (n_az,)
+
+# Step 3: Form the RCMC phase multiplier.
+# For each azimuth frequency (row), multiplier is:
+#   exp{ j*(4π/c)*f_tau*ΔR(f_eta) }.
+# Use an outer product to generate a 2D matrix.
+G_rcmc = np.exp(1j * 4 * np.pi / c * np.outer(ΔR, f_tau))  # shape: (n_az, num_range_samples)
+
+# Step 4: Apply the RCMC correction in the range frequency domain.
+S2 = S1_range * G_rcmc
+
+# Step 5: Transform the corrected data back to the range time domain.
+s2 = np.fft.ifft(S2, axis=1)
+
+# Display the RCMC-corrected data: (a) Real part and (b) Magnitude, with brighter scaling and reversed colormap.
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Extract the real part and magnitude.
+real_img = np.real(s2)
+mag_img = np.abs(s2)
+
+# Define color limits for brightening.
+real_vmin = real_img.min()
+real_vmax = real_img.mean() + 2*real_img.std()
+mag_vmin = mag_img.min()
+mag_vmax = mag_img.mean() + 2*mag_img.std()
+
+# Plot the real part with reversed colormap.
+im0 = axs[0].imshow(real_img, cmap='gray_r', aspect='auto',
+                    vmin=real_vmin, vmax=real_vmax)
+axs[0].set_title("RCMC Corrected Data (Real Part, Reversed)")
+axs[0].set_xlabel("Expanded Range Axis (units)")
+axs[0].set_ylabel("Azimuth (samples)")
+fig.colorbar(im0, ax=axs[0])
+
+# Plot the magnitude with reversed colormap.
+im1 = axs[1].imshow(mag_img, cmap='gray_r', aspect='auto',
+                    vmin=mag_vmin, vmax=mag_vmax)
+axs[1].set_title("RCMC Corrected Data (Magnitude, Reversed)")
+axs[1].set_xlabel("Expanded Range Axis (units)")
+axs[1].set_ylabel("Azimuth (samples)")
+fig.colorbar(im1, ax=axs[1])
+
+plt.tight_layout()
+plt.show()
+
+# --------------------------------------------------------------------------------
+# 5. Azimuth Compression & Azimuth IFFT
+# --------------------------------------------------------------------------------
