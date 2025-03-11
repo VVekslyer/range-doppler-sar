@@ -90,7 +90,7 @@ fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 
 im0 = axs[0].imshow(np.real(s_rc), cmap='gray',
                     extent=[new_x_min, new_x_max, y_max, y_min])
-axs[0].set_title("Range Compressed Data (Real Part)")
+axs[0].set_title("2. Range Compressed Data (Real Part)")
 axs[0].set_xlabel("Expanded Range Axis (units)")
 axs[0].set_ylabel("Azimuth (samples)")
 axs[0].set_aspect('auto')  # Changed from 'equal' to 'auto'
@@ -125,12 +125,13 @@ s_rc_win = s_rc * azimuth_window[:, np.newaxis]
 S1 = np.fft.fftshift(np.fft.fft(s_rc_win, axis=0), axes=0)
 
 # Construct the azimuth frequency axis (in Hz)
-f_eta = np.fft.fftshift(np.fft.fftfreq(n_az, d=dt_az))
+f_η = np.fft.fftshift(np.fft.fftfreq(n_az, d=dt_az))
 
 # For plotting, define an extent that maps:
 # x-axis: expanded range axis (0 to 100 units)
 # y-axis: Doppler frequency from f_eta.min() to f_eta.max()
-extent_az = [new_x_min, new_x_max, f_eta.min(), f_eta.max()]
+extent_az = [new_x_min, new_x_max, f_η.min(), f_η.max()]
+print("extent_az =", extent_az)
 
 # Compute magnitude in dB for better dynamic range visualization.
 mag_dB = 20 * np.log10(np.abs(S1) + 1e-12)
@@ -141,7 +142,7 @@ fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 # Variation A: Real part of azimuth FFT
 im0 = axs[0].imshow(np.real(S1), cmap='gray', extent=extent_az,
                     origin='lower', aspect='auto')
-axs[0].set_title("Azimuth FFT (Real Part)")
+axs[0].set_title("3. Azimuth FFT (Real Part)")
 axs[0].set_xlabel("Expanded Range Axis (units)")
 axs[0].set_ylabel("Azimuth Frequency (Hz)")
 fig.colorbar(im0, ax=axs[0])
@@ -220,6 +221,7 @@ plt.show()
 
 # Step 1: Transform the range (x-axis) to frequency domain.
 S1_range = np.fft.fft(S1, axis=1)  # Now data is in (azimuth Doppler, range frequency)
+print("S1_range =", S1_range.shape)
 
 # Recompute (or re-use) the range frequency axis.
 num_range_samples = s_rc.shape[1]  # number of range samples
@@ -235,7 +237,7 @@ R0 = 10            # Reference slant range in meters
 
 # Step 2: Compute the RCM amount for each azimuth frequency.
 # f_eta (already computed) is the Doppler frequency axis (1D, length = n_az).
-ΔR = (λ**2 * R0 * f_eta**2) / (8 * v**2)  # shape: (n_az,)
+ΔR = (λ**2 * R0 * f_η**2) / (8 * v**2)  # shape: (n_az,)
 
 # Step 3: Form the RCMC phase multiplier.
 # For each azimuth frequency (row), multiplier is:
@@ -265,7 +267,7 @@ mag_vmax = mag_img.mean() + 2*mag_img.std()
 # Plot the real part with reversed colormap.
 im0 = axs[0].imshow(real_img, cmap='gray_r', aspect='auto',
                     vmin=real_vmin, vmax=real_vmax)
-axs[0].set_title("RCMC Corrected Data (Real Part, Reversed)")
+axs[0].set_title("4. RCMC Corrected Data (Real Part, Reversed)")
 axs[0].set_xlabel("Expanded Range Axis (units)")
 axs[0].set_ylabel("Azimuth (samples)")
 fig.colorbar(im0, ax=axs[0])
@@ -284,3 +286,79 @@ plt.show()
 # --------------------------------------------------------------------------------
 # 5. Azimuth Compression & Azimuth IFFT
 # --------------------------------------------------------------------------------
+
+# Compute the azimuth FM rate, K_a (approximately 2V_r^2/(λR0))
+K_a = 2 * v**2 / (λ * R0)  
+
+# --- Azimuth FFT ---
+# Compute the number of azimuth samples and the azimuth sampling interval.
+n_az = s2.shape[0]
+
+# Perform the azimuth FFT of the RCMC-corrected data (s2) along axis=0.
+S_az = np.fft.fftshift(np.fft.fft(s2, axis=0), axes=0)
+
+# Construct the Doppler frequency axis (in Hz).
+f_η = np.fft.fftshift(np.fft.fftfreq(n_az, d=dt_az))
+
+# --- Azimuth Matched Filtering ---
+# The azimuth matched filter is given by:
+#    H_az(f_eta) = exp{ -j * π * (f_eta^2) / K_a }
+H_az = np.exp(-1j * np.pi * (f_η**2) / K_a)
+
+# Apply the matched filter (broadcast H_az along the range dimension).
+S3 = S_az * H_az[:, None]
+
+# Inverse FFT along azimuth (axis=0) to obtain the final focused image.
+S_ac = np.fft.ifft(np.fft.ifftshift(S3, axes=0), axis=0)
+final_image = np.abs(S_ac)
+
+# --- For the spectrum plot, compute the range frequency axis ---
+num_range_samples = s2.shape[1]
+f_tau_shift = np.fft.fftshift(np.fft.fftfreq(num_range_samples, d=dt))
+
+# --- Define extents for plotting ---
+# For the final focused image, we map the range axis to an "expanded" coordinate.
+new_x_min = 0
+new_x_max = 100  # Expanded range axis (units)
+extent_final = [new_x_min, new_x_max, n_az, 0]  # x: expanded range, y: azimuth sample index
+
+# For the Doppler spectrum, set extent using f_tau and f_eta.
+extent_spec = [f_tau_shift.min(), f_tau_shift.max(), f_η.min(), f_η.max()]
+
+# --- Plotting ---
+fig, axs = plt.subplots(2, 2, figsize=(14, 12))
+
+# (a) Compressed signal: Final focused image (amplitude) with Azimuth (samples) vs. Range time (samples).
+im_a = axs[0, 0].imshow(final_image, cmap='gray_r', extent=extent_final, aspect='auto')
+axs[0, 0].set_title("5. Final Focused Image (Compressed Signal)")
+axs[0, 0].set_xlabel("Expanded Range Axis (units)")
+axs[0, 0].set_ylabel("Azimuth (samples)")
+fig.colorbar(im_a, ax=axs[0, 0])
+
+# (b) Target C Spectrum: Magnitude (in dB) of S3 (Doppler-domain data) with Azimuth freq vs. Range freq.
+im_b = axs[0, 1].imshow(20*np.log10(np.abs(S3)+1e-12), cmap='gray_r', extent=extent_spec,
+                         origin='lower', aspect='auto')
+axs[0, 1].set_title("Target C Spectrum (S₃) in dB")
+axs[0, 1].set_xlabel("Range Frequency (Hz)")
+axs[0, 1].set_ylabel("Azimuth Frequency (Hz)")
+fig.colorbar(im_b, ax=axs[0, 1])
+
+# (c) Expanded Target C: Final focused image with expanded range axis.
+im_c = axs[1, 0].imshow(final_image, cmap='gray_r', extent=extent_final, aspect='auto')
+axs[1, 0].set_title("Expanded Final Focused Image")
+axs[1, 0].set_xlabel("Expanded Range Axis (units)")
+axs[1, 0].set_ylabel("Azimuth (samples)")
+fig.colorbar(im_c, ax=axs[1, 0])
+
+# (d) Expanded Target C Contours: Contour plot of the final focused image.
+azimuth_idx = np.arange(n_az)
+range_expanded = np.linspace(new_x_min, new_x_max, num_range_samples)
+X, Y = np.meshgrid(range_expanded, azimuth_idx)
+cs = axs[1, 1].contour(X, Y, final_image, levels=10, cmap='gray_r')
+axs[1, 1].set_title("Expanded Final Focused Image (Contours)")
+axs[1, 1].set_xlabel("Expanded Range Axis (units)")
+axs[1, 1].set_ylabel("Azimuth (samples)")
+fig.colorbar(cs.collections[0], ax=axs[1, 1])
+
+plt.tight_layout()
+plt.show()

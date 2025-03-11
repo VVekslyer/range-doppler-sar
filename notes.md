@@ -158,7 +158,7 @@ The natural slant range output sample spacing is given by $c/(2F_r \sin{θ_i})$,
 
 
 
-# 6  Azimuth Compression
+# 5  Azimuth Compression
 
 In azimuth, there is usually some latitude in the choice of processed resolution. This is because the azimuth signal bandwidth is often greater than needed to make the azimuth resolution the same as the range resolution. "Full-resolution" ( or "single-look") processing can be done, using all the bandwidth, and achieving a resolution close to the theoretical limit of one-half the antenna length. On the other hand, "multilook" processing can be done, in which the data are processed to a resolution less than this limit, to obtain a less noisy image. One-look processing is discussed in this section.
 
