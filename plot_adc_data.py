@@ -67,7 +67,7 @@ for ext in extensions:
                     raw_magnitude = np.abs(raw_adc)
                     # Use percentile-based scaling to handle outliers
                     vmin, vmax = np.percentile(raw_magnitude, [5, 95])
-                    plt.imshow(raw_magnitude, aspect='auto', cmap='gray', vmin=vmin, vmax=vmax)
+                    plt.imshow(raw_magnitude, aspect='auto', cmap='viridis', vmin=vmin, vmax=vmax)
                     plt.title(f"{radar} - Raw ADC Data (Magnitude)")
                     plt.xlabel("Range Samples")
                     plt.ylabel("Azimuth Samples")
@@ -77,7 +77,7 @@ for ext in extensions:
                     plt.subplot(2, 2, 2)
                     raw_db = 20 * np.log10(raw_magnitude + 1e-10)
                     vmin_db, vmax_db = np.percentile(raw_db, [5, 95])
-                    plt.imshow(raw_db, aspect='auto', cmap='gray', vmin=vmin_db, vmax=vmax_db)
+                    plt.imshow(raw_db, aspect='auto', cmap='viridis', vmin=vmin_db, vmax=vmax_db)
                     plt.title(f"{radar} - Raw ADC Data (dB)")
                     plt.xlabel("Range Samples")
                     plt.ylabel("Azimuth Samples")
@@ -90,7 +90,7 @@ for ext in extensions:
                     
                     # Use reasonable dynamic range for visualization
                     vmin_rc, vmax_rc = np.percentile(range_compressed_db, [10, 99.5])
-                    plt.imshow(range_compressed_db, aspect='auto', cmap='gray', vmin=vmin_rc, vmax=vmax_rc)
+                    plt.imshow(range_compressed_db, aspect='auto', cmap='jet', vmin=vmin_rc, vmax=vmax_rc)
                     plt.title(f"{radar} - Range-Compressed Data (Full)")
                     plt.xlabel("Range Bins")
                     plt.ylabel("Azimuth Samples")
@@ -104,7 +104,7 @@ for ext in extensions:
                     end_idx = center + width
                     
                     plt.imshow(range_compressed_db[:, start_idx:end_idx], 
-                              aspect='auto', cmap='gray', vmin=vmin_rc, vmax=vmax_rc)
+                              aspect='auto', cmap='jet', vmin=vmin_rc, vmax=vmax_rc)
                     plt.title(f"{radar} - Range-Compressed Data (Zoomed)")
                     plt.xlabel("Range Bins")
                     plt.ylabel("Azimuth Samples")
