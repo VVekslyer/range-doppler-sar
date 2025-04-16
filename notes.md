@@ -199,3 +199,16 @@ It must be emphasized that the phase mentioned above is an approximation when th
 Please provide four plots in this window (a) Compressed signal with Azimuth (samples) vs. Range time (samples), (b) Target C spectrum with Azimuth freq. (samples) vs. Range freq (samples), (c) Expanded Target C with Azimuth (samples) vs. Range (samples), (d) Expanded Target C contours with Azimuth (sample) vs. Range (samples) 
 
 
+
+So this is pulse-based SAR which doesn't work for our radar system. So let's use this method instead.
+
+I'm trying to implement a Range-doppler algorithm for FMCW SAR by Wang Ying, Qu Changwen, Ping Dianf. They have kind of 8 steps.
+
+1. The data after dechirping + the phase modified function h1
+2. FFT in range direction + De-sloping factor
+3. IFFT in range direction
+4. Adding window in range direction
+5. FFT in range direction
+6. FFT in azimuth direction + reference function in azimuth
+7. IFFT in azimuth direction.
+8. imaging.

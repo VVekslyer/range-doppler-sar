@@ -3,6 +3,10 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 
+# use TeX
+plt.rc('text', usetex=True)
+plt.rc('font', family='serif')
+
 ###################################
 # USER PARAMETERS
 ###################################
@@ -65,7 +69,7 @@ range_compressed_db = 20 * np.log10(np.abs(half_range_compressed) + 1e-10)
 # Create filtered version
 filtered_data = range_compressed_db.copy()
 threshold_db = 65 # Threshold value
-filter_start = 500
+filter_start = 400  # Changed from 500 to 400
 filtered_data[:, filter_start:] = np.minimum(filtered_data[:, filter_start:], threshold_db)
 
 # Create a figure with two vertically stacked plots for range compression results
@@ -91,167 +95,319 @@ fig.colorbar(im2, ax=axs[1], label="Amplitude (dB)")
 plt.tight_layout()
 plt.show()
 
-# Apply ideal low-pass filter and continue with further processing
-# ...existing code...
+# After displaying, crop to only keep range bins 0 to 400
+crop_range_bins = 400  # Changed from 500 to 400 to match the filter_start
+print(f"Cropping to use only range bins 0-{crop_range_bins}")
+filtered_data_cropped = filtered_data[:, :crop_range_bins]
 
-# Process raw data for Step 2 (Real Range Compression) - use absolute values since we may have real data encoded oddly
-raw_data_abs = np.abs(raw_data)
+# Visualize the cropped data
+plt.figure(figsize=(10, 6))
+plt.imshow(filtered_data_cropped, aspect='auto', cmap='jet',
+           vmin=vmin_rc, vmax=vmax_rc)
+plt.title(f"Cropped Range-Compressed Data (0-{crop_range_bins} range bins)")
+plt.xlabel("Range Bins")
+plt.ylabel("Azimuth Samples")
+plt.colorbar(label="Amplitude (dB)")
+plt.tight_layout()
+plt.show()
 
-# ----- Step 2: Range Compression (Main Processing) -----
-print("\n----- Step 2: Range Compression -----")
-num_range_samples = raw_data_abs.shape[1]
+# Define radar parameters
+ifSampleCount = 6000.0
+ifGain = 15
+mainDiv = 69.0
+sweepBandwidth = 20E9  # 20 GHz bandwidth
+sweepCenterFreq = 80E9 # 80 GHz center frequency
+sweepCount = 3000
+sweepDuration = 0.006    # 6 ms sweep
+radarVelocity = 0.01     # 1 cm/s
 
-# Perform range FFT - This is the actual range compression for processing
-S0 = np.fft.fft(raw_data_abs, axis=1)
+# Calculate chirp rate (Hz/s) from sweep parameters
+Kr = sweepBandwidth / sweepDuration  # Chirp rate
 
-# Apply ideal low-pass filter (as shown in the example)
-cutoff = int(0.2 * num_range_samples)  # Tunable parameter
-print(f"Using frequency cutoff at {cutoff}/{num_range_samples} samples")
-
-# Create a filtered version (keeping only lower frequencies)
-S0_filtered = S0.copy()
-S0_filtered[:, cutoff:] = 0
-
-# Alternative: Apply matched filter instead of simple low-pass filter
-τ_min = -2e-6    # seconds
-τ_max = 1.5e-5   # seconds
+# Create range axis and frequency axis for the full range
+τ_min = 0
+τ_max = sweepDuration
 τ_axis = np.linspace(τ_min, τ_max, num_range_samples)
 dt = τ_axis[1] - τ_axis[0]
 f_τ = np.fft.fftfreq(num_range_samples, d=dt)
 
-Kr = 1e12  # Hz/s: assumed chirp rate
+# Create matched filter for range compression
 G = np.exp(1j * np.pi * (f_τ**2) / Kr)
 
-# Apply matched filter
-S0_matched = S0 * G
+# Crop G to match our cropped data dimensions
+G_cropped = G[:crop_range_bins]
 
-# Perform IFFT for both methods to compare
-s_rc_lowpass = np.fft.ifft(S0_filtered, axis=1)
-s_rc_matched = np.fft.ifft(S0_matched, axis=1)
+# Now use only the cropped data for subsequent processing
+# IMPORTANT: Convert filtered_data_cropped back to the complex domain for processing
+filtered_spectrum = 10**(filtered_data_cropped/20) * np.exp(1j * 0)  # Convert from dB back to linear, using zero phase
 
-# For plotting: expand the range axis from 0 to 100 units.
-new_x_min = 0
-new_x_max = 100
-y_min = 0
-y_max = s_rc_lowpass.shape[0]
+# Apply the matched filter to our cropped filtered data
+filtered_spectrum_matched = filtered_spectrum * G_cropped  # Use the cropped matched filter
 
-# Compare both methods - show the full range compressed data
-fig, axs = plt.subplots(1, 2, figsize=(14, 7))
+# Reconstruct a symmetrically padded spectrum for the IFFT to maintain proper dimensions
+# This ensures we have the right dimensions for the subsequent processing steps
+full_spectrum = np.zeros((filtered_spectrum.shape[0], crop_range_bins * 2), dtype=complex)
+full_spectrum[:, :crop_range_bins] = filtered_spectrum_matched
+full_spectrum[:, crop_range_bins:] = np.flip(np.conj(filtered_spectrum_matched), axis=1)
 
-# Show the range compressed data after applying the different processing methods
-im0 = axs[0].imshow(np.abs(s_rc_lowpass), cmap='gray')
-axs[0].set_title("Low-pass Filtered Range Compression")
+# Perform IFFT to get range-compressed signal
+s_rc = np.fft.ifft(full_spectrum, axis=1)
+
+# ----- Step 4: Add window in range direction -----
+print("\n----- Step 4: Window in Range Direction -----")
+# Create window function (Hamming window is commonly used) for our new dimensions
+range_window = np.hamming(crop_range_bins * 2)  # Adjusted for our new dimensions
+
+# Apply window to each azimuth line (across the range dimension)
+s_rc_windowed = s_rc * range_window[np.newaxis, :]
+
+# Visualize the windowing effect
+fig, axs = plt.subplots(2, 1, figsize=(10, 12))
+
+# Before windowing
+im1 = axs[0].imshow(np.abs(s_rc), aspect='auto', cmap='jet')
+axs[0].set_title("Range-Compressed Data (Before Windowing)")
 axs[0].set_xlabel("Range Samples")
-axs[0].set_ylabel("Azimuth (samples)")
-plt.colorbar(im0, ax=axs[0])
+axs[0].set_ylabel("Azimuth Samples")
+fig.colorbar(im1, ax=axs[0])
 
-im1 = axs[1].imshow(np.abs(s_rc_matched), cmap='gray')
-axs[1].set_title("Matched Filter Range Compression")
+# After windowing
+im2 = axs[1].imshow(np.abs(s_rc_windowed), aspect='auto', cmap='jet')
+axs[1].set_title("Range-Compressed Data (After Windowing)")
 axs[1].set_xlabel("Range Samples")
-axs[1].set_ylabel("Azimuth (samples)")
-plt.colorbar(im1, ax=axs[1])
+axs[1].set_ylabel("Azimuth Samples")
+fig.colorbar(im2, ax=axs[1])
 
 plt.tight_layout()
 plt.show()
 
-# Choose which range-compressed data to use for subsequent steps
-# s_rc = s_rc_lowpass  # Uncomment to use low-pass filtering
-s_rc = s_rc_matched   # Uncomment to use matched filtering
+# ----- Step 5: FFT in range direction on windowed data -----
+print("\n----- Step 5: FFT in Range Direction -----")
+# Perform FFT in range direction on windowed data
+S2 = np.fft.fft(s_rc_windowed, axis=1)
 
-# ----- Step 3: Azimuth FFT -----
-n_az = s_rc.shape[0]
-dt_az = 1/1000  # Azimuth sampling interval in seconds; adjust if needed
-azimuth_window = np.hanning(n_az)
-s_rc_win = s_rc * azimuth_window[:, np.newaxis]
-S1 = np.fft.fftshift(np.fft.fft(s_rc_win, axis=0), axes=0)
-f_eta = np.fft.fftshift(np.fft.fftfreq(n_az, d=dt_az))
-extent_az = [new_x_min, new_x_max, f_eta.min(), f_eta.max()]
-mag_dB = 20 * np.log10(np.abs(S1) + 1e-12)
+# Get the positive half of the spectrum to avoid the mirroring effect
+half_spectrum_size = S2.shape[1] // 2
+S2_positive = S2[:, :half_spectrum_size]
 
-fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-im0 = axs[0].imshow(np.real(S1), cmap='gray', extent=extent_az, origin='lower', aspect='auto')
-axs[0].set_title("3. Azimuth FFT (Real Part)")
-axs[0].set_xlabel("Expanded Range Axis (units)")
-axs[0].set_ylabel("Azimuth Frequency (Hz)")
-plt.colorbar(im0, ax=axs[0])
-im1 = axs[1].imshow(mag_dB, cmap='gray', extent=extent_az, origin='lower', aspect='auto')
-axs[1].set_title("Azimuth FFT (Magnitude in dB)")
-axs[1].set_xlabel("Expanded Range Axis (units)")
-axs[1].set_ylabel("Azimuth Frequency (Hz)")
-plt.colorbar(im1, ax=axs[1])
+# Visualize both the full spectrum and the positive half
+fig, axs = plt.subplots(2, 1, figsize=(10, 12))
+
+# Full spectrum (showing the mirroring issue)
+S2_db_full = 20 * np.log10(np.abs(S2) + 1e-10)
+im1 = axs[0].imshow(S2_db_full, aspect='auto', cmap='jet')
+axs[0].set_title("Range Spectrum After Windowing (Full Spectrum)")
+axs[0].set_xlabel("Frequency Bins")
+axs[0].set_ylabel("Azimuth Samples")
+fig.colorbar(im1, ax=axs[0], label="Magnitude (dB)")
+
+# Positive half only
+S2_db = 20 * np.log10(np.abs(S2_positive) + 1e-10)
+im2 = axs[1].imshow(S2_db, aspect='auto', cmap='jet')
+axs[1].set_title("Range Spectrum After Windowing (Positive Half Only)")
+axs[1].set_xlabel("Frequency Bins")
+axs[1].set_ylabel("Azimuth Samples")
+fig.colorbar(im2, ax=axs[1], label="Magnitude (dB)")
+
 plt.tight_layout()
 plt.show()
 
-# ----- Step 4: Range Cell Migration Correction (RCMC) -----
-S1_range = np.fft.fft(S1, axis=1)
-num_range_samples = s_rc.shape[1]
-f_tau = np.fft.fftfreq(num_range_samples, d=dt)
+# Use only the positive half for further processing
+S2 = S2_positive
 
-# Radar/system parameters (adjust as needed)
-c = 3e8
-f_c = 80e9
-λ = c / f_c
-v = 1    # Platform velocity (m/s)
-R0 = 10  # Reference slant range (m)
+# ----- Step 6: FFT in azimuth direction + reference function in azimuth -----
+print("\n----- Step 6: Azimuth FFT and Reference Function -----")
+n_azimuth = S2.shape[0]
 
-ΔR = (λ**2 * R0 * f_eta**2) / (8 * v**2)
-G_rcmc = np.exp(1j * 4 * np.pi / c * np.outer(ΔR, f_tau))
-S2 = S1_range * G_rcmc
-s2 = np.fft.ifft(S2, axis=1)
+# Perform FFT in azimuth direction (with fftshift for visualization)
+S3 = np.fft.fftshift(np.fft.fft(S2, axis=0), axes=0)
 
-fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-real_img = np.real(s2)
-mag_img = np.abs(s2)
-im0 = axs[0].imshow(real_img, cmap='gray_r', aspect='auto')
-axs[0].set_title("4. RCMC Corrected Data (Real Part, Reversed)")
-axs[0].set_xlabel("Expanded Range Axis (units)")
-axs[0].set_ylabel("Azimuth (samples)")
-plt.colorbar(im0, ax=axs[0])
-im1 = axs[1].imshow(mag_img, cmap='gray_r', aspect='auto')
-axs[1].set_title("RCMC Corrected Data (Magnitude, Reversed)")
-axs[1].set_xlabel("Expanded Range Axis (units)")
-axs[1].set_ylabel("Azimuth (samples)")
-plt.colorbar(im1, ax=axs[1])
+# Create azimuth axis and frequency axis
+dt_az = sweepDuration / sweepCount  # Time between azimuth samples
+f_η = np.fft.fftshift(np.fft.fftfreq(n_azimuth, d=dt_az))  # Azimuth frequency axis
+
+# Reference function parameters - adjusted for point target focusing
+c = 3e8  # Speed of light
+λ = c / sweepCenterFreq  # Wavelength
+
+# Improved parameter estimation for a point target scenario
+# For a point reflector, we need to better estimate R0 and velocity effects
+R0 = 5  # Adjust reference range based on expected target distance
+v = 0.05  # Adjust velocity to 5 cm/s for better focus
+
+# Create range-dependent azimuth reference functions
+K_a = 2 * v**2 / (λ * R0)  # Azimuth FM rate
+
+# Apply range-dependent azimuth focusing
+# Create a 2D grid of reference functions to account for range dependence
+range_bins = S3.shape[1]
+H_a = np.zeros((n_azimuth, range_bins), dtype=complex)
+
+# For each range bin, calculate appropriate reference function
+for r in range(range_bins):
+    # Scale R0 based on range bin (linear approximation)
+    R_r = R0 * (1 + 0.1 * (r / range_bins))  # Adjust scale factor as needed
+    K_a_r = 2 * v**2 / (λ * R_r)
+    H_a[:, r] = np.exp(-1j * np.pi * (f_η**2) / K_a_r)
+
+# Apply azimuth reference function to the 2D spectrum
+S4 = S3 * H_a
+
+# Visualize the data after azimuth reference function application
+plt.figure(figsize=(10, 8))
+S4_db = 20 * np.log10(np.abs(S4) + 1e-10)
+plt.imshow(S4_db, aspect='auto', cmap='jet')
+plt.title("2D Spectrum After Azimuth Reference Function")
+plt.xlabel("Range Frequency Bins")
+plt.ylabel("Azimuth Frequency (Hz)")
+plt.colorbar(label="Magnitude (dB)")
 plt.tight_layout()
 plt.show()
 
-# ----- Step 5: Azimuth Compression & IFFT -----
-K_a = 2 * v**2 / (λ * R0)
-S_az = np.fft.fftshift(np.fft.fft(s2, axis=0), axes=0)
-f_eta = np.fft.fftshift(np.fft.fftfreq(n_az, d=dt_az))
-H_az = np.exp(-1j * np.pi * (f_eta**2) / K_a)
-S3 = S_az * H_az[:, None]
-S_ac = np.fft.ifft(np.fft.ifftshift(S3, axes=0), axis=0)
-final_image = np.abs(S_ac)
+# ----- Step 7: IFFT in azimuth direction -----
+print("\n----- Step 7: Azimuth IFFT -----")
+# Perform IFFT in azimuth direction
+S5 = np.fft.ifft(np.fft.ifftshift(S4, axes=0), axis=0)
 
-num_range_samples = s2.shape[1]
-f_tau_shift = np.fft.fftshift(np.fft.fftfreq(num_range_samples, d=dt))
-extent_final = [new_x_min, new_x_max, n_az, 0]
-extent_spec = [f_tau_shift.min(), f_tau_shift.max(), f_eta.min(), f_eta.max()]
-
-fig, axs = plt.subplots(2, 2, figsize=(14, 12))
-im_a = axs[0, 0].imshow(final_image, cmap='gray_r', extent=extent_final, aspect='auto')
-axs[0, 0].set_title("5. Final Focused Image (Compressed Signal)")
-axs[0, 0].set_xlabel("Expanded Range Axis (units)")
-axs[0, 0].set_ylabel("Azimuth (samples)")
-plt.colorbar(im_a, ax=axs[0, 0])
-im_b = axs[0, 1].imshow(20*np.log10(np.abs(S3)+1e-12), cmap='gray_r', extent=extent_spec, origin='lower', aspect='auto')
-axs[0, 1].set_title("Target C Spectrum (S₃) in dB")
-axs[0, 1].set_xlabel("Range Frequency (Hz)")
-axs[0, 1].set_ylabel("Azimuth Frequency (Hz)")
-plt.colorbar(im_b, ax=axs[0, 1])
-im_c = axs[1, 0].imshow(final_image, cmap='gray_r', extent=extent_final, aspect='auto')
-axs[1, 0].set_title("Expanded Final Focused Image")
-axs[1, 0].set_xlabel("Expanded Range Axis (units)")
-axs[1, 0].set_ylabel("Azimuth (samples)")
-plt.colorbar(im_c, ax=axs[1, 0])
-azimuth_idx = np.arange(n_az)
-range_expanded = np.linspace(new_x_min, new_x_max, num_range_samples)
-X, Y = np.meshgrid(range_expanded, azimuth_idx)
-cs = axs[1, 1].contour(X, Y, final_image, levels=10, cmap='gray_r')
-axs[1, 1].set_title("Expanded Final Focused Image (Contours)")
-axs[1, 1].set_xlabel("Expanded Range Axis (units)")
-axs[1, 1].set_ylabel("Azimuth (samples)")
-plt.colorbar(cs.collections[0], ax=axs[1, 1])
+# Visualize the data after azimuth IFFT
+plt.figure(figsize=(10, 8))
+S5_db = 20 * np.log10(np.abs(S5) + 1e-10)
+plt.imshow(S5_db, aspect='auto', cmap='jet')
+plt.title("Data After Azimuth IFFT")
+plt.xlabel("Range Frequency Bins")
+plt.ylabel("Azimuth Samples")
+plt.colorbar(label="Magnitude (dB)")
 plt.tight_layout()
 plt.show()
+
+# ----- Step 8: Imaging (Final IFFT in range direction) -----
+print("\n----- Step 8: Final Imaging -----")
+# Perform IFFT in range direction for final image formation
+final_image = np.fft.ifft(S5, axis=1)
+
+# Extract magnitude for display
+final_image_mag = np.abs(final_image)
+
+# Apply additional post-processing to enhance point targets
+# Apply log compression to enhance dynamic range
+final_image_enhanced = np.log1p(final_image_mag)
+
+# Crop the image to focus on the region of interest, but ensure we have valid dimensions
+# This helps eliminate edge artifacts
+n_azimuth, n_range_bins = final_image_enhanced.shape
+print(f"Final image shape before cropping: {final_image_enhanced.shape}")
+
+# Use more conservative cropping to ensure we don't end up with empty arrays
+crop_range = min(int(n_range_bins * 0.5), n_range_bins - 2)  # Use 50% of range samples or ensure at least 2 remain
+crop_azimuth = min(int(n_azimuth * 0.5), n_azimuth - 2)      # Use 50% of azimuth samples or ensure at least 2 remain
+start_range = min(int(n_range_bins * 0.1), n_range_bins - crop_range - 1)  # Ensure we stay in bounds
+start_azimuth = min(int(n_azimuth * 0.1), n_azimuth - crop_azimuth - 1)    # Ensure we stay in bounds
+
+# Ensure we have valid crop dimensions
+if crop_range <= 0 or crop_azimuth <= 0:
+    print("Warning: Invalid crop dimensions. Using full image instead.")
+    cropped_image = final_image_enhanced
+    start_range, start_azimuth = 0, 0
+    crop_range, crop_azimuth = n_range_bins, n_azimuth
+else:
+    cropped_image = final_image_enhanced[start_azimuth:start_azimuth+crop_azimuth, 
+                                      start_range:start_range+crop_range]
+
+print(f"Cropped image shape: {cropped_image.shape}")
+
+# Create proper axes for the cropped image
+# Adjust range resolution calculation - the original calculation might be too small
+range_resolution = c / (2 * sweepBandwidth)  # Range resolution in mββeters
+print(f"Original calculated range resolution: {range_resolution:.8f} meters")
+
+# Calculate azimuth resolution
+azimuth_resolution = λ / (2 * v * sweepDuration)  # Azimuth resolution in meters
+print(f"Original calculated azimuth resolution: {azimuth_resolution:.8f} meters")
+
+# Apply scaling factor to make the range axis more visible
+range_scaling = 1000  # Scale by 1000x for better visualization
+range_extent = [0, crop_range * range_resolution * range_scaling]
+azimuth_extent = [0, crop_azimuth * azimuth_resolution]
+
+print(f"Range extent after scaling: {range_extent[0]:.2f} to {range_extent[1]:.2f} meters")
+print(f"Azimuth extent: {azimuth_extent[0]:.2f} to {azimuth_extent[1]:.2f} meters")
+
+# Force aspect to auto to prevent squishing of axes
+plt.figure(figsize=(12, 10))
+plt.imshow(cropped_image, cmap='jet', aspect='auto',
+          extent=[range_extent[0], range_extent[1], azimuth_extent[1], azimuth_extent[0]])
+plt.title("Final SAR Image (Enhanced Point Target)")
+plt.xlabel(f"Range (m) [scaled by {range_scaling}x]")
+plt.ylabel("Azimuth (m)")
+plt.colorbar(label="Log Magnitude")
+plt.grid(True, linestyle='--', alpha=0.5)
+
+# Remove the 'image' constraint that forces equal scaling
+# plt.axis('image')  # Commented out to allow different scales
+plt.tight_layout()
+
+# Add markers to highlight potential point targets only if the image is not empty
+from scipy import ndimage
+if cropped_image.size > 0:  # Check if the array is not empty
+    try:
+        # Find local maxima that might be point targets
+        max_filtered = ndimage.maximum_filter(cropped_image, size=min(5, *cropped_image.shape))
+        # Use a lower percentile if the image is small
+        percentile_threshold = 80 if np.prod(cropped_image.shape) < 1000 else 95
+        maxima = (cropped_image == max_filtered) & (cropped_image > np.percentile(cropped_image, percentile_threshold))
+        maxima_coords = np.where(maxima)
+        if len(maxima_coords[0]) > 0:
+            # Convert coordinates to physical positions
+            y_pos = azimuth_extent[0] - (maxima_coords[0] / crop_azimuth) * (azimuth_extent[0] - azimuth_extent[1])
+            x_pos = range_extent[0] + (maxima_coords[1] / crop_range) * (range_extent[1] - range_extent[0])
+            plt.plot(x_pos, y_pos, 'ro', markersize=5)
+            print(f"Found {len(maxima_coords[0])} potential point targets")
+    except Exception as e:
+        print(f"Warning: Could not identify point targets: {e}")
+else:
+    print("Warning: Cropped image is empty. Cannot identify point targets.")
+    
+plt.tight_layout()
+plt.show()
+
+# Display additional visualization - 3D surface plot only if we have a valid image
+if cropped_image.size > 0:
+    try:
+        from mpl_toolkits.mplot3d import Axes3D
+        
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Create meshgrid for 3D surface plot with corrected orientation
+        X, Y = np.meshgrid(np.linspace(range_extent[0], range_extent[1], cropped_image.shape[1]),
+                          np.linspace(azimuth_extent[0], azimuth_extent[1], cropped_image.shape[0]))
+        
+        # Flip the image for correct orientation in 3D
+        plot_data = np.flipud(cropped_image)
+        
+        # Plot the surface with corrected orientation
+        surf = ax.plot_surface(X, Y, plot_data, cmap='jet', linewidth=0, antialiased=False)
+        
+        # Adjust view angle for better visualization
+        ax.view_init(elev=30, azim=225)
+        
+        # Fix the Z axis to make intensity point upward
+        z_min, z_max = ax.get_zlim()
+        ax.set_zlim(z_max, z_min)
+        
+        ax.set_title("3D Surface Plot of SAR Image (Corrected Orientation)")
+        ax.set_xlabel('Range (m)')
+        ax.set_ylabel('Azimuth (m)')
+        ax.set_zlabel('Intensity')
+        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+        
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print(f"Warning: Could not create 3D visualization: {e}")
+else:
+    print("Warning: Cropped image is empty. Cannot create 3D visualization.")
+
+# Process raw data for Step 2 (Real Range Compression) - use absolute values since we may have real data encoded oddly
+raw_data_abs = np.abs(raw_data)
+
