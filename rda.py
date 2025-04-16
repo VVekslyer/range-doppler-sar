@@ -96,7 +96,7 @@ plt.tight_layout()
 plt.show()
 
 # After displaying, crop to only keep range bins 0 to 400
-crop_range_bins = 400  # Changed from 500 to 400 to match the filter_start
+crop_range_bins = filter_start
 print(f"Cropping to use only range bins 0-{crop_range_bins}")
 filtered_data_cropped = filtered_data[:, :crop_range_bins]
 
@@ -256,11 +256,26 @@ S4 = S3 * H_a
 # Visualize the data after azimuth reference function application
 plt.figure(figsize=(10, 8))
 S4_db = 20 * np.log10(np.abs(S4) + 1e-10)
+
+# Create a binary black and white colormap where values above 130 are white, else black
+S4_binary = np.zeros_like(S4_db)
+S4_binary[S4_db > 130] = 1  # Values above 130dB become white
+
+# Display with inverted binary colormap (white for high values, black for low values)
+plt.imshow(S4_binary, aspect='auto', cmap='binary_r')  # binary_r is the reversed binary colormap
+plt.title("2D Spectrum After Azimuth Reference Function (Binary)")
+plt.xlabel("Range Frequency Bins")
+plt.ylabel("Azimuth Frequency (Hz)")
+plt.colorbar(label="Binary (Above/Below 130 dB)")
+
+# Also show the original visualization with a jet colormap for comparison
+plt.figure(figsize=(10, 8))
 plt.imshow(S4_db, aspect='auto', cmap='jet')
-plt.title("2D Spectrum After Azimuth Reference Function")
+plt.title("2D Spectrum After Azimuth Reference Function (Original)")
 plt.xlabel("Range Frequency Bins")
 plt.ylabel("Azimuth Frequency (Hz)")
 plt.colorbar(label="Magnitude (dB)")
+
 plt.tight_layout()
 plt.show()
 
@@ -317,7 +332,7 @@ print(f"Cropped image shape: {cropped_image.shape}")
 
 # Create proper axes for the cropped image
 # Adjust range resolution calculation - the original calculation might be too small
-range_resolution = c / (2 * sweepBandwidth)  # Range resolution in mββeters
+range_resolution = c / (2 * sweepBandwidth)  # Range resolution in meters
 print(f"Original calculated range resolution: {range_resolution:.8f} meters")
 
 # Calculate azimuth resolution
@@ -332,81 +347,100 @@ azimuth_extent = [0, crop_azimuth * azimuth_resolution]
 print(f"Range extent after scaling: {range_extent[0]:.2f} to {range_extent[1]:.2f} meters")
 print(f"Azimuth extent: {azimuth_extent[0]:.2f} to {azimuth_extent[1]:.2f} meters")
 
-# Force aspect to auto to prevent squishing of axes
+# Rotate the image 90 degrees to the right (clockwise)
+cropped_image_rotated = np.rot90(cropped_image, k=-1)  # k=-1 means 90° clockwise
+
+# Display both original and rotated images for comparison
 plt.figure(figsize=(12, 10))
+plt.subplot(121)
 plt.imshow(cropped_image, cmap='jet', aspect='auto',
           extent=[range_extent[0], range_extent[1], azimuth_extent[1], azimuth_extent[0]])
-plt.title("Final SAR Image (Enhanced Point Target)")
+plt.title("Original SAR Image")
 plt.xlabel(f"Range (m) [scaled by {range_scaling}x]")
 plt.ylabel("Azimuth (m)")
 plt.colorbar(label="Log Magnitude")
 plt.grid(True, linestyle='--', alpha=0.5)
 
-# Remove the 'image' constraint that forces equal scaling
-# plt.axis('image')  # Commented out to allow different scales
-plt.tight_layout()
+plt.subplot(122)
+# For the rotated image, we swap the extent dimensions
+plt.imshow(cropped_image_rotated, cmap='jet', aspect='auto',
+          extent=[azimuth_extent[1], azimuth_extent[0], range_extent[1], range_extent[0]])
+plt.title("Rotated SAR Image (90° CW)")
+plt.xlabel("Azimuth (m)")
+plt.ylabel(f"Range (m) [scaled by {range_scaling}x]")
+plt.colorbar(label="Log Magnitude")
+plt.grid(True, linestyle='--', alpha=0.5)
 
-# Add markers to highlight potential point targets only if the image is not empty
+plt.tight_layout()
+plt.show()
+
+# Add markers to highlight potential point targets on the rotated image
+plt.figure(figsize=(12, 10))
+plt.imshow(cropped_image_rotated, cmap='jet', aspect='auto',
+          extent=[azimuth_extent[1], azimuth_extent[0], range_extent[1], range_extent[0]])
+plt.title("Rotated SAR Image with Point Targets (90° CW)")
+plt.xlabel("Azimuth (m)")
+plt.ylabel(f"Range (m) [scaled by {range_scaling}x]")
+plt.colorbar(label="Log Magnitude")
+plt.grid(True, linestyle='--', alpha=0.5)
+
 from scipy import ndimage
-if cropped_image.size > 0:  # Check if the array is not empty
+if cropped_image_rotated.size > 0:  # Check if the array is not empty
     try:
         # Find local maxima that might be point targets
-        max_filtered = ndimage.maximum_filter(cropped_image, size=min(5, *cropped_image.shape))
+        max_filtered = ndimage.maximum_filter(cropped_image_rotated, size=min(5, *cropped_image_rotated.shape))
         # Use a lower percentile if the image is small
-        percentile_threshold = 80 if np.prod(cropped_image.shape) < 1000 else 95
-        maxima = (cropped_image == max_filtered) & (cropped_image > np.percentile(cropped_image, percentile_threshold))
+        percentile_threshold = 80 if np.prod(cropped_image_rotated.shape) < 1000 else 95
+        maxima = (cropped_image_rotated == max_filtered) & (cropped_image_rotated > np.percentile(cropped_image_rotated, percentile_threshold))
         maxima_coords = np.where(maxima)
         if len(maxima_coords[0]) > 0:
-            # Convert coordinates to physical positions
-            y_pos = azimuth_extent[0] - (maxima_coords[0] / crop_azimuth) * (azimuth_extent[0] - azimuth_extent[1])
-            x_pos = range_extent[0] + (maxima_coords[1] / crop_range) * (range_extent[1] - range_extent[0])
+            # Convert coordinates to physical positions (with adjusted axes for rotation)
+            y_pos = range_extent[1] - (maxima_coords[0] / cropped_image_rotated.shape[0]) * (range_extent[1] - range_extent[0])
+            x_pos = azimuth_extent[1] - (maxima_coords[1] / cropped_image_rotated.shape[1]) * (azimuth_extent[1] - azimuth_extent[0])
             plt.plot(x_pos, y_pos, 'ro', markersize=5)
-            print(f"Found {len(maxima_coords[0])} potential point targets")
+            print(f"Found {len(maxima_coords[0])} potential point targets in rotated image")
     except Exception as e:
-        print(f"Warning: Could not identify point targets: {e}")
+        print(f"Warning: Could not identify point targets in rotated image: {e}")
 else:
-    print("Warning: Cropped image is empty. Cannot identify point targets.")
+    print("Warning: Rotated image is empty. Cannot identify point targets.")
     
 plt.tight_layout()
 plt.show()
 
-# Display additional visualization - 3D surface plot only if we have a valid image
-if cropped_image.size > 0:
+# Display additional visualization - 3D surface plot for rotated image
+if cropped_image_rotated.size > 0:
     try:
         from mpl_toolkits.mplot3d import Axes3D
         
         fig = plt.figure(figsize=(12, 10))
         ax = fig.add_subplot(111, projection='3d')
         
-        # Create meshgrid for 3D surface plot with corrected orientation
-        X, Y = np.meshgrid(np.linspace(range_extent[0], range_extent[1], cropped_image.shape[1]),
-                          np.linspace(azimuth_extent[0], azimuth_extent[1], cropped_image.shape[0]))
-        
-        # Flip the image for correct orientation in 3D
-        plot_data = np.flipud(cropped_image)
+        # Create meshgrid for 3D surface plot with corrected orientation for rotated image
+        X, Y = np.meshgrid(np.linspace(azimuth_extent[1], azimuth_extent[0], cropped_image_rotated.shape[1]),
+                          np.linspace(range_extent[0], range_extent[1], cropped_image_rotated.shape[0]))
         
         # Plot the surface with corrected orientation
-        surf = ax.plot_surface(X, Y, plot_data, cmap='jet', linewidth=0, antialiased=False)
+        surf = ax.plot_surface(X, Y, cropped_image_rotated, cmap='jet', linewidth=0, antialiased=False)
         
         # Adjust view angle for better visualization
-        ax.view_init(elev=30, azim=225)
+        ax.view_init(elev=30, azim=135)  # Adjusted for rotated view
         
         # Fix the Z axis to make intensity point upward
         z_min, z_max = ax.get_zlim()
         ax.set_zlim(z_max, z_min)
         
-        ax.set_title("3D Surface Plot of SAR Image (Corrected Orientation)")
-        ax.set_xlabel('Range (m)')
-        ax.set_ylabel('Azimuth (m)')
+        ax.set_title("3D Surface Plot of Rotated SAR Image (90° CW)")
+        ax.set_xlabel('Azimuth (m)')
+        ax.set_ylabel('Range (m)')
         ax.set_zlabel('Intensity')
         fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
         
         plt.tight_layout()
         plt.show()
     except Exception as e:
-        print(f"Warning: Could not create 3D visualization: {e}")
+        print(f"Warning: Could not create 3D visualization of rotated image: {e}")
 else:
-    print("Warning: Cropped image is empty. Cannot create 3D visualization.")
+    print("Warning: Rotated image is empty. Cannot create 3D visualization.")
 
 # Process raw data for Step 2 (Real Range Compression) - use absolute values since we may have real data encoded oddly
 raw_data_abs = np.abs(raw_data)
