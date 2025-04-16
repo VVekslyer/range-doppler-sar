@@ -1,4 +1,5 @@
 PointTargetData/
-
 *.hdf5
+
+Imaging_raw_data/
 *.ch0
